@@ -1,0 +1,204 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // --- Validation Blueprints ---
+
+    function isValidWorld(data) {
+      return data.worldId is string && data.worldId.size() >= 1 && data.worldId.size() <= 128 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 60 &&
+             data.seed is int &&
+             data.gameMode is string && (data.gameMode == 'SURVIVAL' || data.gameMode == 'CREATIVE') &&
+             data.srfMode is string && (data.srfMode == 'NONE' || data.srfMode == 'RAID_FARM' || data.srfMode == 'SLIME_REGION' || data.srfMode == 'PARASITES') &&
+             data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 60 &&
+             data.isPublic is bool &&
+             data.blockEditCount is int && data.blockEditCount >= 0 &&
+             data.parasiteEvolutionPhase is int && data.parasiteEvolutionPhase >= 0 && data.parasiteEvolutionPhase <= 5 &&
+             data.raidStackedWaves is int && data.raidStackedWaves >= 0 && data.raidStackedWaves <= 100 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidBlockDelta(data) {
+      return data.blockKey is string && data.blockKey.size() >= 1 && data.blockKey.size() <= 64 &&
+             data.worldId is string && data.worldId.size() >= 1 && data.worldId.size() <= 128 &&
+             data.x is int && data.x >= -30000 && data.x <= 30000 &&
+             data.y is int && data.y >= 0 && data.y <= 384 &&
+             data.z is int && data.z >= -30000 && data.z <= 30000 &&
+             data.blockType is string && data.blockType.size() >= 1 && data.blockType.size() <= 32 &&
+             data.updatedBy is string && data.updatedBy == request.auth.uid &&
+             data.updatedByName is string && data.updatedByName.size() >= 1 && data.updatedByName.size() <= 60 &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidPlayerPresence(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.worldId is string && data.worldId.size() >= 1 && data.worldId.size() <= 128 &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
+             data.x is int && data.x >= -30000 && data.x <= 30000 &&
+             data.y is int && data.y >= 0 && data.y <= 384 &&
+             data.z is int && data.z >= -30000 && data.z <= 30000 &&
+             data.gameMode is string && (data.gameMode == 'SURVIVAL' || data.gameMode == 'CREATIVE') &&
+             data.health is int && data.health >= 0 && data.health <= 20 &&
+             data.hunger is int && data.hunger >= 0 && data.hunger <= 20 &&
+             data.isFlying is bool &&
+             data.heldItem is string && data.heldItem.size() >= 1 && data.heldItem.size() <= 32 &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    // --- Collection Rules ---
+
+    match /worlds/{worldId} {
+      allow get: if isSignedIn() && isValidId(worldId) &&
+                    (existing().isPublic == true || existing().ownerId == request.auth.uid);
+
+      allow list: if isSignedIn() &&
+                     (existing().isPublic == true || existing().ownerId == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+                       isValidId(worldId) &&
+                       incoming().worldId == worldId &&
+                       incoming().ownerId == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'worldId', 'name', 'seed', 'gameMode', 'srfMode',
+                         'ownerId', 'ownerName', 'isPublic', 'blockEditCount',
+                         'parasiteEvolutionPhase', 'raidStackedWaves', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'worldId', 'name', 'seed', 'gameMode', 'srfMode',
+                         'ownerId', 'ownerName', 'isPublic', 'blockEditCount',
+                         'parasiteEvolutionPhase', 'raidStackedWaves', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidWorld(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(worldId) &&
+                       isValidWorld(incoming()) &&
+                       incoming().worldId == existing().worldId &&
+                       incoming().ownerId == existing().ownerId &&
+                       incoming().seed == existing().seed &&
+                       incoming().createdAt == existing().createdAt &&
+                       (
+                         // Action 1: Owner updates world settings or metadata
+                         (existing().ownerId == request.auth.uid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'name', 'gameMode', 'srfMode', 'isPublic',
+                            'blockEditCount', 'parasiteEvolutionPhase', 'raidStackedWaves', 'updatedAt'
+                          ])) ||
+                         // Action 2: Multiplayer participant updates shared world telemetry counters in public world
+                         (existing().isPublic == true &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'blockEditCount', 'parasiteEvolutionPhase', 'raidStackedWaves', 'updatedAt'
+                          ]))
+                       );
+
+      allow delete: if isSignedIn() && isValidId(worldId) && existing().ownerId == request.auth.uid;
+
+      // Subcollection: Real-time block modifications in chunks
+      match /blocks/{blockKey} {
+        allow get: if isSignedIn() && isValidId(worldId) && isValidId(blockKey) &&
+                      existing().worldId == worldId;
+
+        allow list: if isSignedIn() && existing().worldId == worldId;
+
+        allow create: if isSignedIn() &&
+                         isValidId(worldId) &&
+                         isValidId(blockKey) &&
+                         incoming().blockKey == blockKey &&
+                         incoming().worldId == worldId &&
+                         incoming().keys().hasAll([
+                           'blockKey', 'worldId', 'x', 'y', 'z',
+                           'blockType', 'updatedBy', 'updatedByName', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'blockKey', 'worldId', 'x', 'y', 'z',
+                           'blockType', 'updatedBy', 'updatedByName', 'updatedAt'
+                         ]) &&
+                         isValidBlockDelta(incoming()) &&
+                         exists(/databases/$(database)/documents/worlds/$(worldId));
+
+        allow update: if isSignedIn() &&
+                         isValidId(worldId) &&
+                         isValidId(blockKey) &&
+                         isValidBlockDelta(incoming()) &&
+                         incoming().blockKey == existing().blockKey &&
+                         incoming().worldId == existing().worldId &&
+                         incoming().x == existing().x &&
+                         incoming().y == existing().y &&
+                         incoming().z == existing().z &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'blockType', 'updatedBy', 'updatedByName', 'updatedAt'
+                         ]) &&
+                         exists(/databases/$(database)/documents/worlds/$(worldId));
+
+        allow delete: if isSignedIn() && isValidId(worldId) && isValidId(blockKey) &&
+                         (existing().updatedBy == request.auth.uid ||
+                          get(/databases/$(database)/documents/worlds/$(worldId)).data.ownerId == request.auth.uid);
+      }
+
+      // Subcollection: Real-time multiplayer player presence
+      match /players/{playerId} {
+        allow get: if isSignedIn() && isValidId(worldId) && isValidId(playerId) &&
+                      existing().worldId == worldId;
+
+        allow list: if isSignedIn() && existing().worldId == worldId;
+
+        allow create: if isSignedIn() &&
+                         isValidId(worldId) &&
+                         isValidId(playerId) &&
+                         request.auth.uid == playerId &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().worldId == worldId &&
+                         incoming().keys().hasAll([
+                           'userId', 'worldId', 'displayName', 'x', 'y', 'z',
+                           'gameMode', 'health', 'hunger', 'isFlying', 'heldItem', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'worldId', 'displayName', 'x', 'y', 'z',
+                           'gameMode', 'health', 'hunger', 'isFlying', 'heldItem', 'updatedAt'
+                         ]) &&
+                         isValidPlayerPresence(incoming()) &&
+                         exists(/databases/$(database)/documents/worlds/$(worldId));
+
+        allow update: if isSignedIn() &&
+                         isValidId(worldId) &&
+                         isValidId(playerId) &&
+                         request.auth.uid == playerId &&
+                         isValidPlayerPresence(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().worldId == existing().worldId &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'displayName', 'x', 'y', 'z', 'gameMode',
+                           'health', 'hunger', 'isFlying', 'heldItem', 'updatedAt'
+                         ]);
+
+        allow delete: if isSignedIn() && isValidId(worldId) && isValidId(playerId) &&
+                         request.auth.uid == playerId;
+      }
+    }
+  }
+}

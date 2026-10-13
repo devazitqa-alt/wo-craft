@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">VoxelCraft</string>
+    <string name="sign_in_with_google">Sign in with Google</string>
+    <string name="create_new_world">Create New World</string>
+    <string name="join_multiplayer_world">Join World</string>
+    <string name="offline_flow_active">Offline Flow Active</string>
+    <string name="sync_now">Sync Offline Edits</string>
+    <string name="technical_guide_title">Minecraft Technical Guide &amp; SRF Systems</string>
+    <string name="crafting_grid_title">Crafting &amp; Inventory Grid</string>
+    <string name="back_to_lobby">Exit to World Lobby</string>
+    <string name="how_to_play_video">How to Play Video Guide</string>
+    <string name="gameplay_level_title">Update Gameplay Level</string>
+</resources>

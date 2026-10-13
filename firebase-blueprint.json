@@ -1,0 +1,228 @@
+{
+  "entities": {
+    "World": {
+      "title": "World",
+      "description": "A shared or personal voxel sandbox world generated from a procedural seed with Game Tick, Chunk, and SRF settings.",
+      "type": "object",
+      "properties": {
+        "worldId": {
+          "type": "string",
+          "description": "Unique identifier of the world."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the world (1-60 chars)."
+        },
+        "seed": {
+          "type": "integer",
+          "description": "64-bit integer seed used for procedural terrain and biome generation."
+        },
+        "gameMode": {
+          "type": "string",
+          "enum": ["SURVIVAL", "CREATIVE"],
+          "description": "Default game mode for the world."
+        },
+        "srfMode": {
+          "type": "string",
+          "enum": ["NONE", "RAID_FARM", "SLIME_REGION", "PARASITES"],
+          "description": "Active community SRF system mode."
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the user who created the world."
+        },
+        "ownerName": {
+          "type": "string",
+          "description": "Display name of the world creator."
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Whether the world is joinable in the public multiplayer lobby."
+        },
+        "blockEditCount": {
+          "type": "integer",
+          "description": "Total number of modified blocks saved in the world."
+        },
+        "parasiteEvolutionPhase": {
+          "type": "integer",
+          "description": "Current Scape and Run: Parasites (SRP/SRF) evolution phase (0-5)."
+        },
+        "raidStackedWaves": {
+          "type": "integer",
+          "description": "Current Stacking Raid Farm (SRF) active stacked waves."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the world was created (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the world was last updated (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "worldId",
+        "name",
+        "seed",
+        "gameMode",
+        "srfMode",
+        "ownerId",
+        "ownerName",
+        "isPublic",
+        "blockEditCount",
+        "parasiteEvolutionPhase",
+        "raidStackedWaves",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "BlockDelta": {
+      "title": "BlockDelta",
+      "description": "A single modified block in a world chunk, synchronized in real time across multiplayer clients and cached offline.",
+      "type": "object",
+      "properties": {
+        "blockKey": {
+          "type": "string",
+          "description": "Deterministic coordinate key in the form x_y_z."
+        },
+        "worldId": {
+          "type": "string",
+          "description": "ID of the parent world."
+        },
+        "x": {
+          "type": "integer",
+          "description": "World X coordinate (-30000 to 30000)."
+        },
+        "y": {
+          "type": "integer",
+          "description": "World Y vertical coordinate (0 to 384, matching chunk height)."
+        },
+        "z": {
+          "type": "integer",
+          "description": "World Z coordinate (-30000 to 30000)."
+        },
+        "blockType": {
+          "type": "string",
+          "description": "Block material identifier (e.g., AIR, GRASS, STONE, OAK_LOG, DIAMOND_ORE, RAID_BEACON, SLIME_CORE, PARASITE_BIOMASS)."
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "UID of the player who placed or mined the block."
+        },
+        "updatedByName": {
+          "type": "string",
+          "description": "Display name of the player who modified the block."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the block modification (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "blockKey",
+        "worldId",
+        "x",
+        "y",
+        "z",
+        "blockType",
+        "updatedBy",
+        "updatedByName",
+        "updatedAt"
+      ]
+    },
+    "PlayerPresence": {
+      "title": "PlayerPresence",
+      "description": "Real-time multiplayer player position, game mode, health/hunger telemetry, and active tool in a shared world.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "UID of the active player."
+        },
+        "worldId": {
+          "type": "string",
+          "description": "ID of the world the player is currently exploring."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name of the player."
+        },
+        "x": {
+          "type": "integer",
+          "description": "Current player X block coordinate."
+        },
+        "y": {
+          "type": "integer",
+          "description": "Current player Y vertical coordinate."
+        },
+        "z": {
+          "type": "integer",
+          "description": "Current player Z block coordinate."
+        },
+        "gameMode": {
+          "type": "string",
+          "enum": ["SURVIVAL", "CREATIVE"],
+          "description": "Player's active game mode."
+        },
+        "health": {
+          "type": "integer",
+          "description": "Player health points (0 to 20)."
+        },
+        "hunger": {
+          "type": "integer",
+          "description": "Player hunger points (0 to 20)."
+        },
+        "isFlying": {
+          "type": "boolean",
+          "description": "Whether the player is currently using free flight."
+        },
+        "heldItem": {
+          "type": "string",
+          "description": "Currently equipped block or crafted tool."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last heartbeat/movement (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "worldId",
+        "displayName",
+        "x",
+        "y",
+        "z",
+        "gameMode",
+        "health",
+        "hunger",
+        "isFlying",
+        "heldItem",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/worlds/{worldId}": {
+      "schema": {
+        "$ref": "#/entities/World"
+      },
+      "description": "Stores shared multiplayer and personal voxel worlds."
+    },
+    "/worlds/{worldId}/blocks/{blockKey}": {
+      "schema": {
+        "$ref": "#/entities/BlockDelta"
+      },
+      "description": "Stores real-time block modifications (placed or mined blocks) within a world."
+    },
+    "/worlds/{worldId}/players/{playerId}": {
+      "schema": {
+        "$ref": "#/entities/PlayerPresence"
+      },
+      "description": "Stores real-time multiplayer player coordinates, health, hunger, and flight status in a world."
+    }
+  }
+}

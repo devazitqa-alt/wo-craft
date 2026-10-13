@@ -1,0 +1,6 @@
+{
+  "name": "VoxelCraft",
+  "description": "A 3D-inspired voxel sandbox game with real-time multiplayer sync, offline flow, procedural seed generation, 20 TPS game loop, chunk streaming, Survival & Creative modes, crafting, and SRF community systems.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
