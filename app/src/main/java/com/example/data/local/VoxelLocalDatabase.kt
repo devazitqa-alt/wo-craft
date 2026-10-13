@@ -19,6 +19,7 @@ data class LocalWorldEntity(
     val seed: Long,
     val gameMode: String,
     val srfMode: String,
+    val difficulty: String = "MEDIUM",
     val ownerId: String,
     val ownerName: String,
     val isPublic: Boolean,
@@ -90,7 +91,7 @@ interface VoxelWorldDao {
 
 @Database(
     entities = [LocalWorldEntity::class, LocalBlockEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class VoxelLocalDatabase : RoomDatabase() {

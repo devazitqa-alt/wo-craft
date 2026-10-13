@@ -14,6 +14,7 @@ import com.example.data.model.ActiveMonster
 import com.example.data.model.BlockDeltaModel
 import com.example.data.model.BlockType
 import com.example.data.model.CraftedItem
+import com.example.data.model.DifficultyLevel
 import com.example.data.model.GameMode
 import com.example.data.model.GamePlayLevel
 import com.example.data.model.MonsterType
@@ -23,6 +24,7 @@ import com.example.data.model.WorldModel
 import com.example.data.repository.VoxelRepository
 import com.example.domain.ProceduralWorldEngine
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlin.random.Random
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,6 +56,7 @@ data class GameSessionUiState(
     val selectedTargetZ: Int = 0,
     val gameMode: GameMode = GameMode.SURVIVAL,
     val srfMode: SrfMode = SrfMode.NONE,
+    val selectedDifficulty: DifficultyLevel = DifficultyLevel.MEDIUM,
     // Level-Wise Gameplay Progression State (Levels 1..10)
     val currentLevel: Int = 1,
     val currentXp: Int = 0,
@@ -70,6 +73,8 @@ data class GameSessionUiState(
     val selectedHotbarBlock: BlockType = BlockType.GRASS,
     val equippedTool: CraftedItem? = null,
     val miningProgress: Float = 0f,
+    val miningTargetX: Int? = null,
+    val miningTargetZ: Int? = null,
     val inventory: Map<BlockType, Int> = mapOf(
         BlockType.OAK_LOG to 4,
         BlockType.WOOD_PLANKS to 8,
@@ -183,6 +188,7 @@ class VoxelGameViewModel(
                         seed = w.seed,
                         gameMode = w.gameMode,
                         srfMode = w.srfMode,
+                        difficulty = w.difficulty,
                         ownerId = w.ownerId,
                         ownerName = w.ownerName,
                         isPublic = w.isPublic,
@@ -203,6 +209,7 @@ class VoxelGameViewModel(
                     seed = lw.seed,
                     gameMode = lw.gameMode,
                     srfMode = lw.srfMode,
+                    difficulty = lw.difficulty,
                     ownerId = lw.ownerId,
                     ownerName = lw.ownerName,
                     isPublic = lw.isPublic,
@@ -230,6 +237,30 @@ class VoxelGameViewModel(
         viewModelScope.launch {
             localDao.observePendingSyncCount().collect { count ->
                 _session.update { it.copy(pendingOfflineSyncCount = count) }
+            }
+        }
+
+        // Pre-seed a default Starter World in Room DB so user can play immediately with zero waiting
+        viewModelScope.launch(Dispatchers.IO) {
+            val starterId = "starter_world_realm"
+            if (localDao.getWorldById(starterId) == null) {
+                localDao.upsertWorld(
+                    LocalWorldEntity(
+                        worldId = starterId,
+                        name = "Starter World (Greenfield)",
+                        seed = 104729L,
+                        gameMode = GameMode.SURVIVAL.name,
+                        srfMode = SrfMode.NONE.name,
+                        difficulty = DifficultyLevel.MEDIUM.name,
+                        ownerId = currentUserId,
+                        ownerName = "Crafter",
+                        isPublic = false,
+                        blockEditCount = 0,
+                        parasiteEvolutionPhase = 0,
+                        raidStackedWaves = 0,
+                        pendingSync = false
+                    )
+                )
             }
         }
 
@@ -381,145 +412,223 @@ class VoxelGameViewModel(
     }
 
     /**
-     * Section 4 of PDF: Game Ticks (The Clock Engine)
-     * Processes 20 ticks per second (50ms per tick).
+     * Coroutine-based Game Loop (The Clock Engine)
+     * Executes at a steady 20 TPS (Ticks Per Second, 50ms per tick) via viewModelScope.
+     * Handles:
+     * - Day / Night diurnal cycle tick (2400-tick day)
+     * - Survival mode hunger decay and health regeneration
+     * - In-progress mining progression per tick
+     * - Hostile monster AI tracking & movement toward the player
+     * - Community SRF systems (Raid Farm automated wave stacking & Parasite Phase advancement)
+     * - Dynamic TPS calculation & performance monitoring
      */
-    private fun startGameTickClockEngine() {
+    fun startGameTickClockEngine() {
         tickEngineJob?.cancel()
-        tickEngineJob = viewModelScope.launch {
-            var tickCounter = 0L
+        tickEngineJob = viewModelScope.launch(Dispatchers.Default) {
+            var tickCounter = _session.value.totalGameTicks
             while (isActive) {
-                val frameStart = System.currentTimeMillis()
-                delay(50L) // 0.05 seconds = 20 ticks per second
+                val tickStartNanos = System.nanoTime()
                 tickCounter++
 
-                val state = _session.value
-                if (!state.isInWorld || state.activeWorld == null) continue
+                processSingleGameTick(tickCounter)
 
-                val newDayTicks = ((state.dayTimeTicks + 1) % 2400)
-                var newHealth = state.health
-                var newHunger = state.hunger
-                var newRaidWaves = state.raidStackedWaves
-                var newEmeralds = state.raidEmeraldsCollected
-                var newParasitePoints = state.parasitePoints
-                var newParasitePhase = state.parasiteEvolutionPhase
-                var updatedMonsters = state.activeMonsters
-                var updatedInventory = state.inventory
-                var newBanner = state.statusBannerMessage
+                val elapsedMs = (System.nanoTime() - tickStartNanos) / 1_000_000L
+                val remainingDelay = (TICK_INTERVAL_MS - elapsedMs).coerceAtLeast(0L)
+                delay(remainingDelay)
+            }
+        }
+    }
 
-                if (state.gameMode == GameMode.CREATIVE) {
-                    newHealth = 20
-                    newHunger = 20
-                } else {
-                    if (tickCounter % 180L == 0L && newHunger > 0) {
-                        newHunger = (newHunger - 1).coerceAtLeast(0)
-                    }
-                    if (tickCounter % 80L == 0L && newHunger >= 16 && newHealth < 20) {
-                        newHealth = (newHealth + 1).coerceAtMost(20)
-                    }
-                    if (tickCounter % 100L == 0L && newHunger == 0 && newHealth > 1) {
-                        newHealth = (newHealth - 1).coerceAtLeast(1)
-                        newBanner = "Starving in Survival Mode! Craft & eat Field Rations."
-                    }
-                }
+    /**
+     * Executes one discrete 20 TPS simulation step on game state.
+     * Can also be invoked synchronously in unit tests to verify deterministic behavior.
+     */
+    fun processSingleGameTick(tickCounter: Long = _session.value.totalGameTicks + 1L) {
+        val state = _session.value
+        val world = state.activeWorld ?: return
+        if (!state.isInWorld) return
 
-                when (state.srfMode) {
-                    SrfMode.RAID_FARM -> {
-                        if (tickCounter % 60L == 0L) {
-                            val beaconCount = state.worldBlockOverrides.values.count {
-                                it.blockType == BlockType.RAID_BEACON.name
-                            }.coerceAtLeast(1)
-                            newRaidWaves = (newRaidWaves + beaconCount).coerceAtMost(99)
-                            val dropCount = beaconCount * 2
-                            newEmeralds += dropCount
-                            updatedInventory = updatedInventory.toMutableMap().apply {
-                                put(
-                                    BlockType.EMERALD_BLOCK,
-                                    (get(BlockType.EMERALD_BLOCK) ?: 0) + 1
-                                )
-                            }
-                            newBanner = "SRF Raid Farm Tick: Stacked $newRaidWaves sub-chunk waves (+$dropCount drops)"
-                        }
-                    }
+        val newDayTicks = ((state.dayTimeTicks + 1) % 2400)
+        var newHealth = state.health
+        var newHunger = state.hunger
+        var newRaidWaves = state.raidStackedWaves
+        var newEmeralds = state.raidEmeraldsCollected
+        var newParasitePoints = state.parasitePoints
+        var newParasitePhase = state.parasiteEvolutionPhase
+        var updatedMonsters = state.activeMonsters
+        var updatedInventory = state.inventory
+        var newBanner = state.statusBannerMessage
 
-                    SrfMode.PARASITES -> {
-                        if (tickCounter % 50L == 0L) {
-                            newParasitePoints += 3
-                            newParasitePhase = (newParasitePoints / 30).coerceIn(0, 5)
-                        }
-                    }
+        // 1. Player Vitals Simulation (Survival vs Creative)
+        val difficulty = state.selectedDifficulty
+        if (state.gameMode == GameMode.CREATIVE) {
+            newHealth = 20
+            newHunger = 20
+        } else {
+            // Hunger decay based on selected difficulty tick interval
+            if (tickCounter % difficulty.hungerDecayTickInterval == 0L && newHunger > 0) {
+                newHunger = (newHunger - 1).coerceAtLeast(0)
+            }
+            // Health regeneration when saturated (hunger >= 16) based on difficulty interval
+            if (tickCounter % difficulty.healthRegenTickInterval == 0L && newHunger >= 16 && newHealth < 20) {
+                newHealth = (newHealth + 1).coerceAtMost(20)
+            }
+            // Starvation damage when hunger is completely depleted
+            val starvationInterval = if (difficulty == DifficultyLevel.EXTRA_HARD) 50L else 100L
+            if (tickCounter % starvationInterval == 0L && newHunger == 0 && newHealth > 1) {
+                newHealth = (newHealth - 1).coerceAtLeast(1)
+                newBanner = "Starving in [${difficulty.displayName}] Mode! Craft & eat Field Rations."
+            }
+        }
 
-                    else -> Unit
-                }
-
-                // Hostile Monster AI routine checks scaled by Gameplay Level
-                if (tickCounter % 20L == 0L) {
-                    val isNightOrParasite = newDayTicks >= 1450 || state.srfMode == SrfMode.PARASITES || state.currentLevel >= 4
-                    val maxMonstersForLevel = (2 + state.currentLevel / 2).coerceIn(2, 6)
-                    if (isNightOrParasite && updatedMonsters.size < maxMonstersForLevel) {
-                        val spawnType = when {
-                            state.srfMode == SrfMode.PARASITES && (newParasitePhase >= 3 || state.currentLevel >= 9) ->
-                                MonsterType.ADAPTED_LONGLARMS
-                            state.srfMode == SrfMode.PARASITES || state.currentLevel >= 8 ->
-                                MonsterType.RUPTER_PARASITE
-                            state.srfMode == SrfMode.RAID_FARM || state.currentLevel >= 7 ->
-                                MonsterType.RAID_PILLAGER
-                            Random.nextBoolean() -> MonsterType.ZOMBIE
-                            else -> MonsterType.SKELETON
-                        }
-                        val offsetX = if (Random.nextBoolean()) Random.nextInt(3, 6) else -Random.nextInt(3, 6)
-                        val offsetZ = if (Random.nextBoolean()) Random.nextInt(3, 6) else -Random.nextInt(3, 6)
-                        updatedMonsters = updatedMonsters + ActiveMonster(
-                            id = "mob_${tickCounter}_${Random.nextInt(100, 999)}",
-                            type = spawnType,
-                            x = state.playerX + offsetX,
-                            z = state.playerZ + offsetZ,
-                            hp = spawnType.maxHp + (state.currentLevel * 2)
+        // 2. Active SRF Systems Simulation
+        when (state.srfMode) {
+            SrfMode.RAID_FARM -> {
+                if (tickCounter % 60L == 0L) { // Every 3 seconds (60 ticks)
+                    val beaconCount = state.worldBlockOverrides.values.count {
+                        it.blockType == BlockType.RAID_BEACON.name
+                    }.coerceAtLeast(1)
+                    newRaidWaves = (newRaidWaves + beaconCount).coerceAtMost(99)
+                    val dropCount = beaconCount * 2
+                    newEmeralds += dropCount
+                    updatedInventory = updatedInventory.toMutableMap().apply {
+                        put(
+                            BlockType.EMERALD_BLOCK,
+                            (get(BlockType.EMERALD_BLOCK) ?: 0) + 1
                         )
-                    } else if (!isNightOrParasite && updatedMonsters.isNotEmpty()) {
-                        updatedMonsters = updatedMonsters.filter { it.type.isParasite }
                     }
-
-                    if (state.gameMode == GameMode.SURVIVAL && updatedMonsters.isNotEmpty()) {
-                        updatedMonsters = updatedMonsters.map { mob ->
-                            val dx = (state.playerX - mob.x).coerceIn(-1, 1)
-                            val dz = (state.playerZ - mob.z).coerceIn(-1, 1)
-                            val nextX = mob.x + dx
-                            val nextZ = mob.z + dz
-                            if (abs(nextX - state.playerX) <= 1 && abs(nextZ - state.playerZ) <= 1 && !state.isFlying) {
-                                newHealth = (newHealth - mob.type.attackDamage).coerceAtLeast(0)
-                                newBanner = "${mob.type.displayName} attacked you (-${mob.type.attackDamage} HP)!"
-                            }
-                            mob.copy(x = nextX, z = nextZ)
-                        }
-                        if (newHealth == 0) {
-                            newHealth = 20
-                            newHunger = 20
-                            newBanner = "You respawned at chunk origin (0, 0)!"
-                        }
-                    }
-                }
-
-                val elapsed = (System.currentTimeMillis() - frameStart).coerceAtLeast(1L)
-                val measuredTps = (1000L / elapsed).toInt().coerceIn(18, 20)
-
-                _session.update {
-                    it.copy(
-                        totalGameTicks = tickCounter,
-                        currentTps = measuredTps,
-                        dayTimeTicks = newDayTicks,
-                        health = newHealth,
-                        hunger = newHunger,
-                        raidStackedWaves = newRaidWaves,
-                        raidEmeraldsCollected = newEmeralds,
-                        parasitePoints = newParasitePoints,
-                        parasiteEvolutionPhase = newParasitePhase,
-                        activeMonsters = updatedMonsters,
-                        inventory = updatedInventory,
-                        statusBannerMessage = newBanner
-                    )
+                    newBanner = "SRF Raid Farm Tick: Stacked $newRaidWaves sub-chunk waves (+$dropCount drops)"
                 }
             }
+
+            SrfMode.PARASITES -> {
+                if (tickCounter % 50L == 0L) { // Every 2.5 seconds (50 ticks)
+                    newParasitePoints += 3
+                    newParasitePhase = (newParasitePoints / 30).coerceIn(0, 5)
+                }
+            }
+
+            else -> Unit
+        }
+
+        // 3. Hostile Monster Spawning and Pathfinding
+        if (tickCounter % 20L == 0L) { // Evaluated every 1 second (20 ticks)
+            val isNightOrParasite = newDayTicks >= 1450 || state.srfMode == SrfMode.PARASITES || state.currentLevel >= 4
+            val baseMobs = (2 + state.currentLevel / 2)
+            val maxMonstersForLevel = ((baseMobs + difficulty.maxMonstersPerWave) / 2).coerceIn(2, difficulty.maxMonstersPerWave)
+            if (isNightOrParasite && updatedMonsters.size < maxMonstersForLevel) {
+                val spawnType = when {
+                    state.srfMode == SrfMode.PARASITES && (newParasitePhase >= 3 || state.currentLevel >= 9) ->
+                        MonsterType.ADAPTED_LONGLARMS
+                    state.srfMode == SrfMode.PARASITES || state.currentLevel >= 8 ->
+                        MonsterType.RUPTER_PARASITE
+                    state.srfMode == SrfMode.RAID_FARM || state.currentLevel >= 7 ->
+                        MonsterType.RAID_PILLAGER
+                    Random.nextBoolean() -> MonsterType.ZOMBIE
+                    else -> MonsterType.SKELETON
+                }
+                val offsetX = if (Random.nextBoolean()) Random.nextInt(3, 6) else -Random.nextInt(3, 6)
+                val offsetZ = if (Random.nextBoolean()) Random.nextInt(3, 6) else -Random.nextInt(3, 6)
+                updatedMonsters = updatedMonsters + ActiveMonster(
+                    id = "mob_${tickCounter}_${Random.nextInt(100, 999)}",
+                    type = spawnType,
+                    x = state.playerX + offsetX,
+                    z = state.playerZ + offsetZ,
+                    hp = spawnType.maxHp + (state.currentLevel * 2) + difficulty.monsterHpBonus
+                )
+            } else if (!isNightOrParasite && updatedMonsters.isNotEmpty()) {
+                updatedMonsters = updatedMonsters.filter { it.type.isParasite }
+            }
+
+            if (state.gameMode == GameMode.SURVIVAL && updatedMonsters.isNotEmpty()) {
+                updatedMonsters = updatedMonsters.map { mob ->
+                    val dx = (state.playerX - mob.x).coerceIn(-1, 1)
+                    val dz = (state.playerZ - mob.z).coerceIn(-1, 1)
+                    val nextX = mob.x + dx
+                    val nextZ = mob.z + dz
+                    if (abs(nextX - state.playerX) <= 1 && abs(nextZ - state.playerZ) <= 1 && !state.isFlying) {
+                        val scaledDamage = (mob.type.attackDamage * difficulty.monsterDamageMultiplier).roundToInt().coerceAtLeast(1)
+                        newHealth = (newHealth - scaledDamage).coerceAtLeast(0)
+                        newBanner = "${mob.type.displayName} attacked you (-$scaledDamage HP) [${difficulty.displayName}]!"
+                    }
+                    mob.copy(x = nextX, z = nextZ)
+                }
+                if (newHealth == 0) {
+                    newHealth = 20
+                    newHunger = 20
+                    newBanner = "Defeated in ${difficulty.displayName} Mode! Respawned at chunk origin (0, 0)."
+                }
+            }
+        }
+
+        // 4. Per-Tick Mining Progress (Ticks Per Block Harvesting)
+        var currentMiningProgress = state.miningProgress
+        var currentMiningTargetX = state.miningTargetX
+        var currentMiningTargetZ = state.miningTargetZ
+        var minedBlockReward: BlockType? = null
+
+        if (state.actionMode == CrosshairActionMode.MINE && currentMiningTargetX != null && currentMiningTargetZ != null) {
+            val col = ProceduralWorldEngine.getNaturalColumn(currentMiningTargetX, currentMiningTargetZ, world.seed, state.parasiteEvolutionPhase)
+            val key = "${currentMiningTargetX}_${currentMiningTargetZ}"
+            val existingOverride = state.worldBlockOverrides[key]
+            val currentBlock = existingOverride?.let { BlockType.fromKey(it.blockType) }
+                ?: if (state.undergroundCaveLayer) col.undergroundOre else col.surfaceBlock
+
+            if (currentBlock != BlockType.AIR && currentBlock != BlockType.WATER) {
+                val effectiveToolTier = maxOf(
+                    state.equippedTool?.toolTier ?: 0,
+                    (state.currentLevel - 1) / 2
+                )
+                if (currentBlock.requiredToolTier <= effectiveToolTier || state.gameMode == GameMode.CREATIVE) {
+                    val toolMult = state.equippedTool?.toolSpeedMultiplier ?: 1f
+                    val levelMult = state.levelConfig.miningSpeedBonus
+                    val diffMult = difficulty.miningSpeedMultiplier
+                    val step = (1f * toolMult * levelMult * diffMult) / currentBlock.hardnessTicks.coerceAtLeast(4)
+                    currentMiningProgress += step
+                    if (currentMiningProgress >= 1f) {
+                        // Block harvested successfully in game tick loop
+                        minedBlockReward = currentBlock
+                        currentMiningProgress = 0f
+                        currentMiningTargetX = null
+                        currentMiningTargetZ = null
+                        val replacementBlock = if (state.undergroundCaveLayer) BlockType.AIR else col.biome.subBlock
+                        commitBlockModification(world, currentMiningTargetX ?: state.selectedTargetX, col.surfaceY, currentMiningTargetZ ?: state.selectedTargetZ, replacementBlock)
+                        awardExperience(currentBlock.xpReward, "Harvested +1 ${currentBlock.displayName}")
+                    }
+                }
+            } else {
+                currentMiningProgress = 0f
+                currentMiningTargetX = null
+                currentMiningTargetZ = null
+            }
+        }
+
+        if (minedBlockReward != null) {
+            updatedInventory = updatedInventory.toMutableMap().apply {
+                put(minedBlockReward, (get(minedBlockReward) ?: 0) + 1)
+            }
+        }
+
+        // 5. Commit Tick State Update
+        _session.update {
+            it.copy(
+                totalGameTicks = tickCounter,
+                currentTps = 20,
+                dayTimeTicks = newDayTicks,
+                health = newHealth,
+                hunger = newHunger,
+                miningProgress = currentMiningProgress,
+                miningTargetX = currentMiningTargetX,
+                miningTargetZ = currentMiningTargetZ,
+                raidStackedWaves = newRaidWaves,
+                raidEmeraldsCollected = newEmeralds,
+                parasitePoints = newParasitePoints,
+                parasiteEvolutionPhase = newParasitePhase,
+                activeMonsters = updatedMonsters,
+                inventory = updatedInventory,
+                statusBannerMessage = newBanner,
+                blocksMinedInLevel = if (minedBlockReward != null) it.blocksMinedInLevel + 1 else it.blocksMinedInLevel
+            )
         }
     }
 
@@ -528,7 +637,8 @@ class VoxelGameViewModel(
         seedInput: String,
         gameMode: GameMode,
         srfMode: SrfMode,
-        isPublic: Boolean
+        isPublic: Boolean,
+        difficulty: DifficultyLevel = _session.value.selectedDifficulty
     ) {
         val parsedSeed = seedInput.trim().toLongOrNull()
             ?: if (seedInput.isBlank()) Random.nextLong(100_000L, 999_999_999L)
@@ -542,6 +652,7 @@ class VoxelGameViewModel(
                 gameMode = gameMode,
                 srfMode = srfMode,
                 isPublic = isPublic,
+                difficulty = difficulty,
                 isOfflineMode = offline
             )
             result.onSuccess { worldId ->
@@ -551,6 +662,7 @@ class VoxelGameViewModel(
                     seed = parsedSeed,
                     gameMode = gameMode.name,
                     srfMode = srfMode.name,
+                    difficulty = difficulty.name,
                     ownerId = currentUserId,
                     ownerName = "You",
                     isPublic = isPublic
@@ -564,9 +676,34 @@ class VoxelGameViewModel(
         }
     }
 
+    fun selectDifficulty(difficulty: DifficultyLevel) {
+        _session.update {
+            it.copy(
+                selectedDifficulty = difficulty,
+                statusBannerMessage = "Difficulty mode: ${difficulty.displayName} (${difficulty.badgeLabel})"
+            )
+        }
+    }
+
+    fun launchDirectPlayWithDifficulty(difficulty: DifficultyLevel) {
+        selectDifficulty(difficulty)
+        val targetWorld = worldsList.value.firstOrNull() ?: WorldModel(
+            worldId = "starter_world_realm",
+            name = "Starter World (Greenfield)",
+            seed = 104729L,
+            gameMode = GameMode.SURVIVAL.name,
+            srfMode = SrfMode.NONE.name,
+            difficulty = difficulty.name,
+            ownerId = currentUserId,
+            ownerName = "Crafter"
+        )
+        enterWorld(targetWorld.copy(difficulty = difficulty.name))
+    }
+
     fun enterWorld(world: WorldModel) {
         val mode = runCatching { GameMode.valueOf(world.gameMode) }.getOrDefault(GameMode.SURVIVAL)
         val srf = runCatching { SrfMode.valueOf(world.srfMode) }.getOrDefault(SrfMode.NONE)
+        val diff = DifficultyLevel.fromKey(world.difficulty.ifEmpty { _session.value.selectedDifficulty.name })
 
         _session.update {
             it.copy(
@@ -579,13 +716,14 @@ class VoxelGameViewModel(
                 selectedTargetZ = 0,
                 gameMode = mode,
                 srfMode = srf,
+                selectedDifficulty = diff,
                 health = 20,
                 hunger = 20,
                 isFlying = mode == GameMode.CREATIVE,
                 raidStackedWaves = world.raidStackedWaves.toInt(),
                 parasiteEvolutionPhase = world.parasiteEvolutionPhase.toInt(),
                 activeMonsters = emptyList(),
-                statusBannerMessage = "Entered '${world.name}' • Level ${it.currentLevel}: ${it.levelConfig.title}"
+                statusBannerMessage = "Entered '${world.name}' • [${diff.displayName}] • Level ${it.currentLevel}: ${it.levelConfig.title}"
             )
         }
 
@@ -772,12 +910,15 @@ class VoxelGameViewModel(
                     }
                     val toolMult = state.equippedTool?.toolSpeedMultiplier ?: 1f
                     val levelMult = state.levelConfig.miningSpeedBonus
-                    val step = (10f * toolMult * levelMult) / currentBlock.hardnessTicks.coerceAtLeast(4)
+                    val diffMult = state.selectedDifficulty.miningSpeedMultiplier
+                    val step = (10f * toolMult * levelMult * diffMult) / currentBlock.hardnessTicks.coerceAtLeast(4)
                     val nextProgress = state.miningProgress + step
                     if (nextProgress < 1f) {
                         _session.update {
                             it.copy(
                                 miningProgress = nextProgress,
+                                miningTargetX = targetX,
+                                miningTargetZ = targetZ,
                                 statusBannerMessage = "Mining ${currentBlock.displayName} (Lv.${state.currentLevel} ${levelMult}x)... ${(nextProgress * 100).toInt()}%"
                             )
                         }
@@ -1098,7 +1239,9 @@ class VoxelGameViewModel(
         }
     }
 
-    private companion object {
+    companion object {
         const val TAG = "VoxelGameVM"
+        const val TICK_RATE_TPS = 20
+        const val TICK_INTERVAL_MS = 50L
     }
 }

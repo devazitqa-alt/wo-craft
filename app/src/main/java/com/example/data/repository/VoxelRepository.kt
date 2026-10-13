@@ -40,15 +40,14 @@ class VoxelRepository(
     private val auth
         get() = Firebase.auth
 
-    private fun requireUserId(): String {
-        return auth.currentUser?.uid
-            ?: throw IllegalStateException("User must be signed in with Google before accessing Firestore.")
+    private fun getUserId(): String {
+        return auth.currentUser?.uid ?: "guest_player"
     }
 
     private fun currentDisplayName(): String {
         val raw = auth.currentUser?.displayName?.takeIf { it.isNotBlank() }
             ?: auth.currentUser?.email?.substringBefore("@")?.takeIf { it.isNotBlank() }
-            ?: "Crafter"
+            ?: "Guest Crafter"
         return raw.take(50)
     }
 
@@ -97,14 +96,15 @@ class VoxelRepository(
         gameMode: GameMode,
         srfMode: SrfMode,
         isPublic: Boolean,
+        difficulty: DifficultyLevel = DifficultyLevel.MEDIUM,
         isOfflineMode: Boolean = false
     ): Result<String> = runCatching {
-        val uid = requireUserId()
+        val uid = getUserId()
         val displayName = currentDisplayName()
         val cleanName = name.trim().ifEmpty { "Overworld" }.take(60)
         val worldId = "w_" + UUID.randomUUID().toString().replace("-", "").take(20)
 
-        // Always persist immediately to local Room DB for offline resilience
+        // Always persist immediately to local Room DB for direct play and offline resilience
         localDao?.upsertWorld(
             LocalWorldEntity(
                 worldId = worldId,
@@ -112,17 +112,18 @@ class VoxelRepository(
                 seed = seed,
                 gameMode = gameMode.name,
                 srfMode = srfMode.name,
+                difficulty = difficulty.name,
                 ownerId = uid,
                 ownerName = displayName,
                 isPublic = isPublic,
                 blockEditCount = 0,
                 parasiteEvolutionPhase = 0,
                 raidStackedWaves = 0,
-                pendingSync = isOfflineMode
+                pendingSync = isOfflineMode || auth.currentUser == null
             )
         )
 
-        if (!isOfflineMode) {
+        if (!isOfflineMode && auth.currentUser != null) {
             val path = "worlds/$worldId"
             val payload = mapOf(
                 "worldId" to worldId,
@@ -130,6 +131,7 @@ class VoxelRepository(
                 "seed" to seed,
                 "gameMode" to gameMode.name,
                 "srfMode" to srfMode.name,
+                "difficulty" to difficulty.name,
                 "ownerId" to uid,
                 "ownerName" to displayName,
                 "isPublic" to isPublic,
@@ -157,19 +159,18 @@ class VoxelRepository(
         raidStackedWaves: Int,
         isOfflineMode: Boolean = false
     ): Result<Unit> = runCatching {
-        requireUserId()
         localDao?.getWorldById(worldId)?.let { existing ->
             localDao.upsertWorld(
                 existing.copy(
                     blockEditCount = blockEditCount,
                     parasiteEvolutionPhase = parasiteEvolutionPhase.coerceIn(0, 5),
                     raidStackedWaves = raidStackedWaves.coerceIn(0, 100),
-                    pendingSync = isOfflineMode,
+                    pendingSync = isOfflineMode || auth.currentUser == null,
                     updatedAtMillis = System.currentTimeMillis()
                 )
             )
         }
-        if (!isOfflineMode) {
+        if (!isOfflineMode && auth.currentUser != null) {
             val path = "worlds/$worldId"
             val updates = mapOf(
                 "blockEditCount" to blockEditCount.coerceAtLeast(0).toLong(),
@@ -187,14 +188,15 @@ class VoxelRepository(
     }
 
     suspend fun deleteWorld(worldId: String): Result<Unit> = runCatching {
-        requireUserId()
         localDao?.deleteWorld(worldId)
-        val path = "worlds/$worldId"
-        try {
-            db.collection("worlds").document(worldId).delete().await()
-        } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.DELETE, path)
-            throw e
+        if (auth.currentUser != null) {
+            val path = "worlds/$worldId"
+            try {
+                db.collection("worlds").document(worldId).delete().await()
+            } catch (e: Exception) {
+                handleFirestoreError(e, OperationType.DELETE, path)
+                throw e
+            }
         }
     }
 
@@ -222,7 +224,7 @@ class VoxelRepository(
         blockType: BlockType,
         isOfflineMode: Boolean = false
     ): Result<String> = runCatching {
-        val uid = requireUserId()
+        val uid = getUserId()
         val displayName = currentDisplayName()
         val safeX = x.coerceIn(-30000, 30000)
         val safeY = y.coerceIn(0, 384)
@@ -240,11 +242,11 @@ class VoxelRepository(
                 blockType = blockType.name,
                 updatedBy = uid,
                 updatedByName = displayName,
-                pendingSync = true
+                pendingSync = isOfflineMode || auth.currentUser == null
             )
         )
 
-        if (!isOfflineMode) {
+        if (!isOfflineMode && auth.currentUser != null) {
             val path = "worlds/$worldId/blocks/$blockKey"
             val payload = mapOf(
                 "blockKey" to blockKey,
@@ -300,7 +302,7 @@ class VoxelRepository(
         isFlying: Boolean,
         heldItem: String
     ): Result<Unit> = runCatching {
-        val uid = requireUserId()
+        val uid = auth.currentUser?.uid ?: return@runCatching
         val displayName = currentDisplayName()
         val path = "worlds/$worldId/players/$uid"
         val payload = mapOf(

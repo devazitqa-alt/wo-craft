@@ -32,9 +32,12 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Coronavirus
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Flight
@@ -43,6 +46,7 @@ import androidx.compose.material.icons.filled.Hardware
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PlayArrow
@@ -86,6 +90,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.model.BlockType
+import com.example.data.model.DifficultyLevel
 import com.example.data.model.GameMode
 import com.example.data.model.SrfMode
 import com.example.data.model.WorldModel
@@ -307,7 +312,7 @@ private fun WorldLobbyScreen(
                                     color = VoxelObsidian.copy(alpha = 0.85f)
                                 ) {
                                     Text(
-                                        text = "VOXELCRAFT MULTIPLAYER & OFFLINE ENGINE",
+                                        text = if (currentUserId == "guest_player") "VOXELCRAFT • DIRECT PLAY READY" else "VOXELCRAFT MULTIPLAYER & OFFLINE ENGINE",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = VoxelEmerald,
                                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
@@ -344,15 +349,17 @@ private fun WorldLobbyScreen(
                                             tint = VoxelDiamondCyan
                                         )
                                     }
-                                    IconButton(
-                                        onClick = onSignOut,
-                                        modifier = Modifier.testTag("sign_out_button")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.AutoMirrored.Filled.Logout,
-                                            contentDescription = "Sign Out",
-                                            tint = Color.White
-                                        )
+                                    if (currentUserId != "guest_player") {
+                                        IconButton(
+                                            onClick = onSignOut,
+                                            modifier = Modifier.testTag("sign_out_button")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.AutoMirrored.Filled.Logout,
+                                                contentDescription = "Sign Out",
+                                                tint = Color.White
+                                            )
+                                        }
                                     }
                                 }
                             }

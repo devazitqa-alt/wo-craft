@@ -8,6 +8,86 @@ enum class GameMode(val label: String, val subtitle: String) {
     CREATIVE("Creative Mode", "Infinite health & resources, free flight, passive monsters")
 }
 
+/**
+ * Difficulty Level Modes: Easy, Medium, Hard, Extra Hard.
+ * Users can choose their desired difficulty before playing on the home page.
+ */
+enum class DifficultyLevel(
+    val id: String,
+    val displayName: String,
+    val badgeLabel: String,
+    val description: String,
+    val colorHex: Long,
+    val monsterDamageMultiplier: Float,
+    val hungerDecayTickInterval: Long, // 20 TPS clock ticks between hunger decrements
+    val healthRegenTickInterval: Long, // 20 TPS clock ticks between health regens
+    val miningSpeedMultiplier: Float,  // mining progress rate multiplier
+    val maxMonstersPerWave: Int,       // maximum concurrent hostile mobs
+    val monsterHpBonus: Int            // bonus HP for hostile mobs
+) {
+    EASY(
+        id = "easy",
+        displayName = "Easy",
+        badgeLabel = "RELAXED",
+        description = "Gentle pace: slow hunger, rapid health regen, fewer monsters with 50% dmg, +50% mining speed.",
+        colorHex = 0xFF4CAF50,
+        monsterDamageMultiplier = 0.5f,
+        hungerDecayTickInterval = 360L,
+        healthRegenTickInterval = 40L,
+        miningSpeedMultiplier = 1.5f,
+        maxMonstersPerWave = 2,
+        monsterHpBonus = 0
+    ),
+    MEDIUM(
+        id = "medium",
+        displayName = "Medium",
+        badgeLabel = "STANDARD",
+        description = "Balanced classic survival: standard monster damage, regular hunger pacing, normal mining.",
+        colorHex = 0xFF29B6F6,
+        monsterDamageMultiplier = 1.0f,
+        hungerDecayTickInterval = 180L,
+        healthRegenTickInterval = 80L,
+        miningSpeedMultiplier = 1.0f,
+        maxMonstersPerWave = 4,
+        monsterHpBonus = 2
+    ),
+    HARD(
+        id = "hard",
+        displayName = "Hard",
+        badgeLabel = "CHALLENGE",
+        description = "Tough wilderness: +60% monster damage, faster hunger drain, slower regen, challenging mining.",
+        colorHex = 0xFFFF9800,
+        monsterDamageMultiplier = 1.6f,
+        hungerDecayTickInterval = 100L,
+        healthRegenTickInterval = 140L,
+        miningSpeedMultiplier = 0.9f,
+        maxMonstersPerWave = 6,
+        monsterHpBonus = 6
+    ),
+    EXTRA_HARD(
+        id = "extra_hard",
+        displayName = "Extra Hard",
+        badgeLabel = "NIGHTMARE",
+        description = "Extreme nightmare: 2.4x monster damage, aggressive spawns, rapid starvation, grueling mining.",
+        colorHex = 0xFFF44336,
+        monsterDamageMultiplier = 2.4f,
+        hungerDecayTickInterval = 60L,
+        healthRegenTickInterval = 220L,
+        miningSpeedMultiplier = 0.75f,
+        maxMonstersPerWave = 8,
+        monsterHpBonus = 12
+    );
+
+    companion object {
+        fun fromKey(nameOrId: String?): DifficultyLevel {
+            if (nameOrId.isNullOrBlank()) return MEDIUM
+            return entries.firstOrNull {
+                it.name.equals(nameOrId, ignoreCase = true) || it.id.equals(nameOrId, ignoreCase = true)
+            } ?: MEDIUM
+        }
+    }
+}
+
 enum class SrfMode(val label: String, val acronymFull: String, val description: String) {
     NONE(
         "Vanilla Core",
@@ -321,6 +401,7 @@ data class WorldModel(
     val seed: Long = 1048576L,
     val gameMode: String = GameMode.SURVIVAL.name,
     val srfMode: String = SrfMode.NONE.name,
+    val difficulty: String = DifficultyLevel.MEDIUM.name,
     val ownerId: String = "",
     val ownerName: String = "Player",
     val isPublic: Boolean = true,

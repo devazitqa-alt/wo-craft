@@ -58,7 +58,9 @@ abstract class FirestoreEmulatorTestBase {
         }
 
         firestore = FirebaseFirestore.getInstance(app, databaseId)
+        try { firestore.useEmulator(EMULATOR_HOST, FIRESTORE_PORT) } catch (_: Exception) {}
         auth = FirebaseAuth.getInstance(app)
+        try { auth.useEmulator(EMULATOR_HOST, AUTH_PORT) } catch (_: Exception) {}
     }
 
     @After

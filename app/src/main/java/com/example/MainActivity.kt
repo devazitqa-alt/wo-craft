@@ -59,40 +59,35 @@ fun AppNavigation(auth: FirebaseAuth = Firebase.auth) {
     val scope = rememberCoroutineScope()
     val credentialManager = remember { CredentialManager.create(context) }
 
-    if (user == null) {
-        AuthScreen(
-            onAuthSuccess = {
-                // AuthStateListener automatically transitions currentUser
-            }
-        )
-    } else {
-        val currentUserId = user.uid
-        val gameViewModel: VoxelGameViewModel = viewModel(
-            key = currentUserId,
-            factory = viewModelFactory {
-                initializer {
-                    val app = checkNotNull(this[APPLICATION_KEY]) {
-                        "APPLICATION_KEY missing from CreationExtras"
-                    }
-                    val databaseId = app.getString(R.string.firestore_database_id)
-                    val db = FirebaseFirestore.getInstance(databaseId)
-                    val localDb = VoxelLocalDatabase.getInstance(app)
-                    val dao = localDb.voxelWorldDao()
-                    val repo = VoxelRepository(db, dao)
-                    VoxelGameViewModel(
-                        repository = repo,
-                        localDao = dao,
-                        currentUserId = currentUserId,
-                        appContext = app
-                    )
+    // Direct Play: Allow users to play immediately without login authentication
+    val currentUserId = user?.uid ?: "guest_player"
+    val gameViewModel: VoxelGameViewModel = viewModel(
+        key = currentUserId,
+        factory = viewModelFactory {
+            initializer {
+                val app = checkNotNull(this[APPLICATION_KEY]) {
+                    "APPLICATION_KEY missing from CreationExtras"
                 }
+                val databaseId = app.getString(R.string.firestore_database_id)
+                val db = FirebaseFirestore.getInstance(databaseId)
+                val localDb = VoxelLocalDatabase.getInstance(app)
+                val dao = localDb.voxelWorldDao()
+                val repo = VoxelRepository(db, dao)
+                VoxelGameViewModel(
+                    repository = repo,
+                    localDao = dao,
+                    currentUserId = currentUserId,
+                    appContext = app
+                )
             }
-        )
+        }
+    )
 
-        MainVoxelCraftScreen(
-            viewModel = gameViewModel,
-            currentUserId = currentUserId,
-            onSignOut = {
+    MainVoxelCraftScreen(
+        viewModel = gameViewModel,
+        currentUserId = currentUserId,
+        onSignOut = {
+            if (user != null) {
                 signOut(
                     context = context,
                     credentialManager = credentialManager,
@@ -100,6 +95,6 @@ fun AppNavigation(auth: FirebaseAuth = Firebase.auth) {
                     scope = scope
                 )
             }
-        )
-    }
+        }
+    )
 }
